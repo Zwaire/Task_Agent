@@ -13,15 +13,12 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
 
-  Future<void> init() async {
-    // 初始化时区，定时推送必须依赖时区
+Future<void> init() async {
     tz.initializeTimeZones();
 
-    // Android 初始化配置
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_launcher');
 
-    // iOS/macOS 初始化配置
     const DarwinInitializationSettings initializationSettingsDarwin =
         DarwinInitializationSettings(
       requestAlertPermission: true,
@@ -35,26 +32,55 @@ class NotificationService {
       macOS: initializationSettingsDarwin,
     );
 
-    // 🚨 修正 1：V20 开始强制要求使用命名参数 initializationSettings:
     await flutterLocalNotificationsPlugin.initialize(
       settings: initializationSettings,
     );
+
+    // 👇 👇 👇 新增以下代码：主动向 Android 系统请求权限 👇 👇 👇
+    final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
+        flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+
+    if (androidImplementation != null) {
+      // 1. 请求发送系统通知的权限 (Android 13+ 必须)
+      await androidImplementation.requestNotificationsPermission();
+      // 2. 请求设置精准闹钟的权限 (Android 12+ 必须，否则定时器不生效)
+      await androidImplementation.requestExactAlarmsPermission();
+    }
   }
 
   // 核心方法：为特定任务安排定时通知
   Future<void> scheduleTaskNotification(Task task) async {
+    final now = DateTime.now();
+    
     // 如果任务已经完成，或者开始时间已经是过去式，就不再安排提醒
-    if (task.status == 'completed' || task.startTime.isBefore(DateTime.now())) {
+    if (task.status == 'completed' || task.startTime.isBefore(now)) {
       return;
     }
 
-    // 设定提醒时间：比如在任务开始前 10 分钟提醒
+    // 计划提醒时间：任务开始前 10 分钟
     final scheduledTime = task.startTime.subtract(const Duration(minutes: 10));
     
-    // 如果提前 10 分钟的时间也已经过去了，就立刻提醒 (5秒后)
-    final tz.TZDateTime tzScheduledTime = scheduledTime.isBefore(DateTime.now())
-        ? tz.TZDateTime.now(tz.local).add(const Duration(seconds: 5)) 
-        : tz.TZDateTime.from(scheduledTime, tz.local);
+    tz.TZDateTime tzScheduledTime;
+    String bodyText;
+
+    // 判断：现在距离任务开始，是否已经不足 10 分钟了？
+    if (scheduledTime.isBefore(now)) {
+      // 补偿机制：5秒后立刻提醒
+      tzScheduledTime = tz.TZDateTime.now(tz.local).add(const Duration(seconds: 5));
+      
+      // 动态计算还剩几分钟
+      int minutesLeft = task.startTime.difference(now).inMinutes;
+      if (minutesLeft > 0) {
+        bodyText = '即将开始！(还剩约 $minutesLeft 分钟) ${task.reason}';
+      } else {
+        bodyText = '任务时间已到！请尽快处理。${task.reason}';
+      }
+    } else {
+      // 正常机制：未来的任务，严格在提前 10 分钟时触发
+      tzScheduledTime = tz.TZDateTime.from(scheduledTime, tz.local);
+      bodyText = '将于 10 分钟后开始。${task.reason}';
+    }
 
     const AndroidNotificationDetails androidPlatformChannelSpecifics =
         AndroidNotificationDetails(
@@ -69,17 +95,16 @@ class NotificationService {
     const NotificationDetails platformChannelSpecifics =
         NotificationDetails(android: androidPlatformChannelSpecifics);
 
-    // 🚨 修正 2 & 3：V20 强制使用全命名参数，删除了旧的 iOS 兼容代码，使用了新的 AndroidScheduleMode
     await flutterLocalNotificationsPlugin.zonedSchedule(
       id: task.id, 
       title: '⏰ 日程提醒: ${task.taskName}',
-      body: '将于 10 分钟后开始。${task.reason}',
+      body: bodyText, // 👇 这里使用了动态生成的文本
       scheduledDate: tzScheduledTime,
       notificationDetails: platformChannelSpecifics,
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle, 
     );
     
-    print("✅ 已成功注册定时通知：[${task.taskName}]，提醒时间：$tzScheduledTime");
+    print("✅ 已成功注册定时通知：[${task.taskName}]，提醒时间：$tzScheduledTime，文案：$bodyText");
   }
 
   // 取消通知
