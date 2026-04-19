@@ -1,12 +1,17 @@
 import os
 import json
-import dashscope
 from dotenv import load_dotenv
 from core.prompts import get_scheduler_system_prompt
 from typing import Any
+from openai import OpenAI
 
 load_dotenv()
-dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
+
+# 👇 核心修改 1：初始化 OpenAI 客户端，并将其基准地址指向阿里云百炼的兼容接口
+client = OpenAI(
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
 
 def parse_user_intent_to_schedule(user_input: str) -> dict:
     '''
@@ -20,33 +25,34 @@ def parse_user_intent_to_schedule(user_input: str) -> dict:
     ]
 
     try:
-        response: Any = dashscope.Generation.call(
-            model='qwen3.5-122b-a10b',
+        # 👇 核心修改 2：使用标准 openai 格式调用大模型，无视本地 SDK 路由校验
+        completion = client.chat.completions.create(
+            model='qwen3.5-flash',
             messages=messages,
-            result_format='message'
+            # OpenAI 兼容模式不需要显式指定 result_format='message'
         )
         
-        if response.status_code  == 200:
-            reply_content = response.output.choices[0].message.content
+        # 👇 核心修改 3：按 OpenAI 的标准数据结构提取文本
+        reply_content = completion.choices[0].message.content
 
-            reply_content = reply_content.strip()
-            if reply_content.startswith("```json"):
-                reply_content = reply_content[7:]
-            if reply_content.endswith("```"):
-                reply_content = reply_content[:-3]
+        # 原本的 JSON 字符串清洗和提取逻辑保持不变
+        reply_content = reply_content.strip()
+        if reply_content.startswith("```json"):
+            reply_content = reply_content[7:]
+        if reply_content.endswith("```"):
+            reply_content = reply_content[:-3]
 
-            schedule_data = json.loads(reply_content.strip())
-            return schedule_data
-        else :
-            print(f"API 调用失败，状态码: {response.status_code}")
-            return {}
+        schedule_data = json.loads(reply_content.strip())
+        return schedule_data
 
     except json.JSONDecodeError:
         print("Error: 模型返回的内容无法解析为 JSON。")
-        print(reply_content)
+        # 此时如果解析失败，将大模型返回的原始字符串打印出来方便排错
+        print(reply_content) 
         return {}
     except Exception as e:
-        print(f"发生未知错误: {e}")
+        # OpenAI 的错误类会自动抛出包含状态码和原因的异常
+        print(f"调用发生未知错误: {e}")
         return {}
 
 if __name__ == "__main__":
