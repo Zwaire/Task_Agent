@@ -21,7 +21,7 @@ def parse_user_intent_to_schedule(user_input: str) -> dict:
 
     try:
         response: Any = dashscope.Generation.call(
-            model='qwen3.5-flash',
+            model='qwen3.5-122b-a10b',
             messages=messages,
             result_format='message'
         )
